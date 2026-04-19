@@ -1,0 +1,20 @@
+# Build
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output
+figures/
+
+# Claude Code
+.claude/
+CLAUDE.md

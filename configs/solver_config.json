@@ -1,0 +1,8 @@
+{
+    "rho": 10.0,
+    "alpha": 1.6,
+    "eps_pri": 0.001,
+    "eps_dual": 0.001,
+    "max_iter": 2000,
+    "kkt_reg": 1e-12
+}
