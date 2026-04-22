@@ -39,16 +39,18 @@ struct ProblemData {
     // ADMM parameters
     double rho     = 1.0;     // penalty parameter
     double alpha   = 1.6;     // over-relaxation factor in [1.5, 1.8]
-    double eps_pri = 1e-3;    // primal residual tolerance
-    double eps_dual = 1e-3;   // dual residual tolerance
+    double eps_abs = 1e-3;    // primal residual tolerance
+    double eps_rel = 1e-3;   // dual residual tolerance
     int max_iter   = 1000;    // maximum ADMM iterations
     double kkt_reg = 1e-12;   // regularization for the (2,2) zero block
+    bool   use_riccati = false; // use Riccati recursion instead of sparse LDLT for y-update
 
-    // Adaptive rho parameters
-    bool   adaptive_rho   = false;  // enable adaptive rho adjustment
-    int    adapt_interval = 25;     // check every N iterations
-    double adapt_ratio    = 10.0;   // mu: primal/dual ratio threshold
-    double adapt_factor   = 2.0;    // tau: multiply/divide factor
+    // Adaptive rho parameters (OSQP-style)
+    bool   adaptive_rho       = false;   // enable adaptive rho adjustment
+    int    adapt_interval     = 25;      // check every N iterations
+    double adapt_tolerance    = 5.0;     // minimum change ratio to trigger refactorization
+    double rho_min            = 1e-6;    // lower bound on rho
+    double rho_max            = 1e+6;    // upper bound on rho
 
     // Optional: fix initial state
     std::optional<Eigen::VectorXd> x0;

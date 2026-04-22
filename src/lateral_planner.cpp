@@ -19,8 +19,8 @@ SolverConfig loadSolverConfig(const std::string& path) {
     SolverConfig cfg;
     if (j.contains("rho"))      cfg.rho      = j["rho"];
     if (j.contains("alpha"))    cfg.alpha    = j["alpha"];
-    if (j.contains("eps_pri"))  cfg.eps_pri  = j["eps_pri"];
-    if (j.contains("eps_dual")) cfg.eps_dual = j["eps_dual"];
+    if (j.contains("eps_abs"))  cfg.eps_abs  = j["eps_abs"];
+    if (j.contains("eps_rel")) cfg.eps_rel = j["eps_rel"];
     if (j.contains("max_iter")) cfg.max_iter = j["max_iter"];
     if (j.contains("kkt_reg"))  cfg.kkt_reg  = j["kkt_reg"];
     return cfg;
@@ -111,14 +111,16 @@ LateralPlanner::LateralPlanner(const PlannerConfig& planner_cfg,
     // --- Solver parameters ---
     problem_data_.rho           = solver_cfg_.rho;
     problem_data_.alpha         = solver_cfg_.alpha;
-    problem_data_.eps_pri       = solver_cfg_.eps_pri;
-    problem_data_.eps_dual      = solver_cfg_.eps_dual;
+    problem_data_.eps_abs       = solver_cfg_.eps_abs;
+    problem_data_.eps_rel      = solver_cfg_.eps_rel;
     problem_data_.max_iter      = solver_cfg_.max_iter;
     problem_data_.kkt_reg       = solver_cfg_.kkt_reg;
     problem_data_.adaptive_rho  = solver_cfg_.adaptive_rho;
     problem_data_.adapt_interval = solver_cfg_.adapt_interval;
-    problem_data_.adapt_ratio   = solver_cfg_.adapt_ratio;
-    problem_data_.adapt_factor  = solver_cfg_.adapt_factor;
+    problem_data_.adapt_tolerance = solver_cfg_.adapt_tolerance;
+    problem_data_.rho_min       = solver_cfg_.rho_min;
+    problem_data_.rho_max       = solver_cfg_.rho_max;
+    problem_data_.use_riccati   = solver_cfg_.use_riccati;
 }
 
 ADMMResult LateralPlanner::plan(const Eigen::VectorXd& x0,

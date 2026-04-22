@@ -34,14 +34,16 @@ static SolverConfig makeSolver(const nlohmann::json& j) {
     SolverConfig s;
     if (j.contains("rho"))            s.rho            = j["rho"];
     if (j.contains("alpha"))          s.alpha          = j["alpha"];
-    if (j.contains("eps_pri"))        s.eps_pri        = j["eps_pri"];
-    if (j.contains("eps_dual"))       s.eps_dual       = j["eps_dual"];
+    if (j.contains("eps_abs"))        s.eps_abs        = j["eps_abs"];
+    if (j.contains("eps_rel"))       s.eps_rel       = j["eps_rel"];
     if (j.contains("max_iter"))       s.max_iter       = j["max_iter"];
     if (j.contains("kkt_reg"))        s.kkt_reg        = j["kkt_reg"];
-    if (j.contains("adaptive_rho"))   s.adaptive_rho   = j["adaptive_rho"];
-    if (j.contains("adapt_interval")) s.adapt_interval = j["adapt_interval"];
-    if (j.contains("adapt_ratio"))    s.adapt_ratio    = j["adapt_ratio"];
-    if (j.contains("adapt_factor"))   s.adapt_factor   = j["adapt_factor"];
+    if (j.contains("adaptive_rho"))    s.adaptive_rho    = j["adaptive_rho"];
+    if (j.contains("adapt_interval"))  s.adapt_interval  = j["adapt_interval"];
+    if (j.contains("adapt_tolerance")) s.adapt_tolerance = j["adapt_tolerance"];
+    if (j.contains("rho_min"))         s.rho_min         = j["rho_min"];
+    if (j.contains("rho_max"))         s.rho_max         = j["rho_max"];
+    if (j.contains("use_riccati"))     s.use_riccati     = j["use_riccati"];
     return s;
 }
 
@@ -150,13 +152,27 @@ static void write_csv_obstacle(const std::string& path,
 }
 
 // ---------------------------------------------------------------------------
+// Merge defaults with per-scenario overrides
+// ---------------------------------------------------------------------------
+static nlohmann::json merge_override(const nlohmann::json& defaults,
+                                     const nlohmann::json& overrides) {
+    nlohmann::json merged = defaults;
+    if (!overrides.is_null()) {
+        merged.update(overrides);
+    }
+    return merged;
+}
+
+// ---------------------------------------------------------------------------
 // Run one scenario
 // ---------------------------------------------------------------------------
 static void run_scenario(const std::string& csv_dir,
-                         const nlohmann::json& scenario) {
+                         const nlohmann::json& scenario,
+                         const nlohmann::json& default_planner,
+                         const nlohmann::json& default_solver) {
     std::string name = scenario["name"];
-    auto pc = makePlanner(scenario.value("planner", nlohmann::json::object()));
-    auto sc = makeSolver(scenario.value("solver", nlohmann::json::object()));
+    auto pc = makePlanner(merge_override(default_planner, scenario.value("planner", nlohmann::json())));
+    auto sc = makeSolver(merge_override(default_solver, scenario.value("solver", nlohmann::json())));
     auto x0 = makeX0(scenario["x0"]);
     auto obs = makeObstacles(scenario.value("obstacles", nlohmann::json::array()));
 
@@ -232,13 +248,19 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: cannot open scenario config " << config_path << "\n";
         return 1;
     }
-    nlohmann::json scenarios = nlohmann::json::parse(cf);
+    nlohmann::json root = nlohmann::json::parse(cf);
+
+    auto default_planner = root.value("defaults", nlohmann::json::object())
+                                 .value("planner", nlohmann::json::object());
+    auto default_solver  = root.value("defaults", nlohmann::json::object())
+                                 .value("solver", nlohmann::json::object());
+    auto scenarios = root.value("scenarios", nlohmann::json::array());
 
     std::cout << "Loaded " << scenarios.size() << " scenarios from "
               << config_path << "\n\n";
 
     for (const auto& sc : scenarios) {
-        run_scenario(csv_dir, sc);
+        run_scenario(csv_dir, sc, default_planner, default_solver);
     }
 
     print_timing_table();

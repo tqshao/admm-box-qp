@@ -19,8 +19,21 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+# ---- OSQP (benchmarking solver) -------------------------------------------
+option(BUILD_OSQP_BENCHMARK "Build OSQP benchmark solver" ON)
+
+if(BUILD_OSQP_BENCHMARK)
+    FetchContent_Declare(
+        osqp
+        GIT_REPOSITORY https://github.com/osqp/osqp.git
+        GIT_TAG        v0.6.3
+    )
+    set(OSQP_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(osqp)
+endif()
+
 # ---- Library --------------------------------------------------------------
-add_library(admm_solver src/admm_solver.cpp)
+add_library(admm_solver src/admm_solver.cpp src/riccati_solver.cpp)
 target_link_libraries(admm_solver PUBLIC Eigen3::Eigen)
 
 # ---- Tests ----------------------------------------------------------------
@@ -85,3 +98,17 @@ install(EXPORT ADMMTargets
 install(DIRECTORY configs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/admm/configs
 )
+
+# ---- OSQP solver library & benchmark app ----------------------------------
+if(BUILD_OSQP_BENCHMARK)
+    add_library(osqp_solver_lib src/osqp_solver.cpp)
+    target_link_libraries(osqp_solver_lib PUBLIC Eigen3::Eigen osqpstatic)
+    target_include_directories(osqp_solver_lib
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+
+    add_executable(benchmark_solvers apps/benchmark_solvers.cpp)
+    target_link_libraries(benchmark_solvers PRIVATE
+        lateral_planner osqp_solver_lib nlohmann_json::nlohmann_json)
+endif()

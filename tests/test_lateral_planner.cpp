@@ -23,7 +23,7 @@ LateralPlanner makePlanner(double lane_half_width = 1.75,
 
     SolverConfig sc;
     sc.rho = 10.0; sc.alpha = 1.6;
-    sc.eps_pri = 1e-3; sc.eps_dual = 1e-3;
+    sc.eps_abs = 1e-3; sc.eps_rel = 1e-3;
     sc.max_iter = 2000;
 
     return LateralPlanner(pc, sc);
@@ -77,7 +77,7 @@ TEST(LateralPlannerTest, LaneKeepingFromOffset) {
 
     // All states within lane boundaries
     const double hw = cfg.lane_half_width;
-    const double tol = planner.solverConfig().eps_pri;
+    const double tol = planner.solverConfig().eps_abs;
     for (int k = 0; k <= cfg.N; ++k) {
         EXPECT_GE(result.x[k](0), -hw - tol)
             << "Left boundary violated at step " << k;
@@ -94,7 +94,7 @@ TEST(LateralPlannerTest, LaneBoundaryRespected) {
     const auto& cfg = planner.plannerConfig();
     const auto& sc  = planner.solverConfig();
     const double hw  = cfg.lane_half_width;
-    const double tol = sc.eps_pri;
+    const double tol = sc.eps_abs;
 
     Eigen::VectorXd x0(3);
     x0 << 1.3, 0.1, 0.0;  // very close to right boundary, drifting outward
@@ -176,7 +176,7 @@ TEST(LateralPlannerTest, ActiveBoundaryAvoidance) {
     const auto& cfg = planner.plannerConfig();
     const auto& sc  = planner.solverConfig();
     const double hw  = cfg.lane_half_width;
-    const double tol = sc.eps_pri;
+    const double tol = sc.eps_abs;
 
     // Start near center but with high lateral velocity toward right boundary
     Eigen::VectorXd x0(3);
@@ -219,4 +219,53 @@ TEST(LateralPlannerTest, TimingPopulated) {
 
     EXPECT_GT(result.time_kkt_us, 0.0) << "KKT timing should be positive";
     EXPECT_GT(result.time_solve_us, 0.0) << "Solve timing should be positive";
+}
+
+// ============================================================================
+// Test 7: Riccati path matches KKT for lateral planner
+// ============================================================================
+TEST(LateralPlannerTest, RiccatiMatchesKKT) {
+    PlannerConfig pc;
+    pc.lane_half_width = 1.75;
+    pc.max_lat_vel     = 1.0;
+    pc.max_lat_acc     = 3.0;
+    pc.max_lat_jerk    = 10.0;
+    pc.N               = 30;
+    pc.v_x             = 20.0;
+    pc.dt              = 0.1;
+
+    SolverConfig sc;
+    sc.rho = 10.0; sc.alpha = 1.6;
+    sc.eps_abs = 1e-3; sc.eps_rel = 1e-3;
+    sc.max_iter = 2000;
+
+    Eigen::VectorXd x0(3);
+    x0 << 0.8, 0.0, 0.0;
+
+    // KKT path
+    LateralPlanner planner_kkt(pc, sc);
+    auto result_kkt = planner_kkt.plan(x0);
+    ASSERT_TRUE(result_kkt.converged);
+
+    // Riccati path
+    sc.use_riccati = true;
+    LateralPlanner planner_riccati(pc, sc);
+    auto result_riccati = planner_riccati.plan(x0);
+    ASSERT_TRUE(result_riccati.converged);
+
+    // Ruiz scaling changes numerical conditioning of the LDLT path,
+    // so both paths converge within ADMM tolerance but to slightly
+    // different numerical points.
+    for (int k = 0; k <= pc.N; ++k) {
+        EXPECT_NEAR(result_kkt.x[k](0), result_riccati.x[k](0), 5e-3)
+            << "y mismatch at step " << k;
+        EXPECT_NEAR(result_kkt.x[k](1), result_riccati.x[k](1), 5e-3)
+            << "vy mismatch at step " << k;
+        EXPECT_NEAR(result_kkt.x[k](2), result_riccati.x[k](2), 5e-3)
+            << "ay mismatch at step " << k;
+    }
+    for (int k = 0; k < pc.N; ++k) {
+        EXPECT_NEAR(result_kkt.u[k](0), result_riccati.u[k](0), 5e-3)
+            << "jerk mismatch at step " << k;
+    }
 }

@@ -6,23 +6,25 @@
 
 namespace admm {
 
-// ADMM solver parameters — typically loaded from configs/solver_config.json.
+// ADMM solver parameters. Defaults can be overridden per-scenario in scenarios.json.
 struct SolverConfig {
     double rho      = 10.0;
     double alpha    = 1.6;
-    double eps_pri  = 1e-3;
-    double eps_dual = 1e-3;
+    double eps_abs  = 1e-3;
+    double eps_rel = 1e-3;
     int    max_iter = 2000;
     double kkt_reg  = 1e-12;
+    bool   use_riccati = false;
 
-    // Adaptive rho
-    bool   adaptive_rho   = false;
-    int    adapt_interval = 25;
-    double adapt_ratio    = 10.0;
-    double adapt_factor   = 2.0;
+    // Adaptive rho (OSQP-style)
+    bool   adaptive_rho       = false;
+    int    adapt_interval     = 25;
+    double adapt_tolerance    = 5.0;
+    double rho_min            = 1e-6;
+    double rho_max            = 1e+6;
 };
 
-// Lateral planner parameters — typically loaded from configs/planner_config.json.
+// Lateral planner parameters. Defaults can be overridden per-scenario in scenarios.json.
 //
 // Physical setup:
 //   - Vehicle travels at constant longitudinal speed v_x.
@@ -90,6 +92,7 @@ public:
 
     const PlannerConfig& plannerConfig() const { return planner_cfg_; }
     const SolverConfig&  solverConfig()  const { return solver_cfg_; }
+    const ProblemData&   problemData()   const { return problem_data_; }
 
     // Build per-element custom bounds that incorporate obstacles.
     std::pair<Eigen::VectorXd, Eigen::VectorXd>

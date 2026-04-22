@@ -29,9 +29,7 @@ tests/
   test_admm.cpp         Unit tests for core solver
   test_lateral_planner.cpp  Unit tests for lateral planner
 configs/
-  solver_config.json     Default ADMM parameters
-  planner_config.json    Default physical/cost parameters
-  scenarios.json         9 test scenario definitions
+  scenarios.json         9 test scenario definitions (planner/solver overrides per scenario)
 scripts/
   plot_results.py        Generate PNG plots from CSV
 ```
@@ -202,17 +200,43 @@ Given a penalty parameter $\rho > 0$ and dual variables (multipliers) $\lambda$,
 
 ### Step 1: $y$-Update (Solving the Global KKT System)
 
-Find $y^{k+1}$ that minimizes the cost while staying close to $z^k$ and satisfying dynamics:
+Starting from the **augmented Lagrangian** of the consensus problem:
 
-$$\min_{y} \quad f(y) + \frac{\rho}{2} \|y - z^k + \frac{\lambda^k}{\rho}\|^2 \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
+$$\mathcal{L}_\rho(y, z, \lambda) = f(y) + g(z) + \lambda^T(y - z) + \frac{\rho}{2}\|y - z\|^2$$
 
-This is solved by calculating the following **linear KKT system**:
+The $y$-update fixes $z = z^k$ and $\lambda = \lambda^k$, and minimizes over $y$:
+
+$$y^{k+1} = \arg\min_{y} \; f(y) + \lambda^{k,T}(y - z^k) + \frac{\rho}{2}\|y - z^k\|^2 \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
+
+Completing the square (absorbing constant terms w.r.t. $y$):
+
+$$y^{k+1} = \arg\min_{y} \; f(y) + \frac{\rho}{2}\left\|y - z^k + \frac{\lambda^k}{\rho}\right\|^2 \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
+
+Since $f(y) = \frac{1}{2}y^T \mathbf{H} y$ is quadratic (the stacked LQR cost), this subproblem is an **equality-constrained QP**:
+
+$$\min_{y} \quad \frac{1}{2}y^T (\mathbf{H} + \rho \mathbf{I})\, y - y^T(\rho\, z^k - \lambda^k) \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
+
+Introduce KKT multiplier $\nu$ for the equality constraint $\mathbf{C}y = \mathbf{d}$, the **first-order optimality conditions** are:
+
+$$\frac{\partial}{\partial y}: \quad (\mathbf{H} + \rho \mathbf{I})\, y + \mathbf{C}^T \nu = \rho\, z^k - \lambda^k$$
+
+$$\frac{\partial}{\partial \nu}: \quad \mathbf{C}y = \mathbf{d}$$
+
+Written in **block matrix form**:
 
 $$\begin{bmatrix} \mathbf{H} + \rho \mathbf{I} & \mathbf{C}^T \\ \mathbf{C} & \mathbf{0} \end{bmatrix} \begin{bmatrix} y^{k+1} \\ \nu \end{bmatrix} = \begin{bmatrix} \rho z^k - \lambda^k \\ \mathbf{d} \end{bmatrix}$$
 
-- **$\mathbf{H}$**: Block-diagonal Hessian matrix composed of $Q, R, P$.
+**Matrix definitions:**
 
-- **$\mathbf{C}, \mathbf{d}$**: Matrices representing the linear equality constraints of the dynamics.
+- **$\mathbf{H}$**: Block-diagonal Hessian of the LQR cost, composed of $Q, R, P$:
+
+$$\mathbf{H} = \mathrm{diag}(\underbrace{Q, R, \dots, Q, R}_{N \text{ stages}}, P)$$
+
+- **$\mathbf{C}, \mathbf{d}$**: Linear equality constraints encoding the **dynamics**. Each block-row $k$ enforces $x_{k+1} - A x_k - B u_k = d_k$. For the standard trajectory problem, $d_k = 0$ (homogeneous dynamics). If an initial state $\bar{x}_0$ is provided, additional rows enforce $x_0 = \bar{x}_0$, giving:
+
+$$\mathbf{d} = \begin{bmatrix} \mathbf{0}_{N \cdot n_x} \\ \bar{x}_0 \end{bmatrix}$$
+
+> **Key insight:** The left-hand side KKT matrix is **constant** across iterations (it depends only on $\mathbf{H}$, $\mathbf{C}$, and $\rho$). This allows **pre-factorization** — factorize once offline, and each iteration only requires a back-substitution with the updated right-hand side. 
 
 
 ### Step 2: $z$-Update (Element-wise Projection)
