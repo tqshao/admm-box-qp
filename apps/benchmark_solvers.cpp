@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -232,41 +233,42 @@ static void print_results(const std::vector<BenchRecord>& records) {
     std::cout << "\n" << std::string(W, '=') << "\n";
 
     // --- Summary table ---
-    const int SW = 90;
-    std::cout << "\n" << std::string(SW, '=') << "\n";
-    std::cout << "              ADMM vs OSQP Summary\n";
-    std::cout << std::string(SW, '=') << "\n";
-
-    std::cout << std::left << std::setw(24) << "Scenario"
-              << " | "
+    std::cout << "\n";
+    std::cout << "ADMM vs OSQP Summary\n";
+    std::cout << std::string(80, '-') << "\n";
+    std::cout << std::left  << std::setw(29) << "Scenario"
               << std::right
-              << std::setw(5) << "Iter" << " "
-              << std::setw(4) << "Pol" << " "
-              << std::setw(10) << "Cost" << " "
-              << std::setw(10) << "Viol" << " "
-              << " | "
-              << std::setw(5) << "Iter" << " "
+              << std::setw(4) << "It"
+              << std::setw(3) << "P"
+              << std::setw(10) << "Cost"
+              << std::setw(10) << "Viol"
+              << "  |  "
+              << std::setw(4) << "It"
               << std::setw(10) << "Cost"
               << "\n";
-    std::cout << std::string(SW, '-') << "\n";
+    std::cout << std::string(80, '-') << "\n";
 
     for (const auto& r : records) {
-        std::cout << std::left << std::setw(24) << r.name << " | "
+        // Format violation: 0 → "0", otherwise scientific
+        std::ostringstream viol_ss;
+        if (r.post_violation < 1e-12)
+            viol_ss << "0";
+        else
+            viol_ss << std::scientific << std::setprecision(1) << r.post_violation;
+
+        std::cout << std::left << std::setw(29) << r.name
                   << std::right
-                  << std::setw(5) << r.admm_iters << " "
-                  << std::setw(4) << (r.admm_polished ? "*" : " ")
-                  << std::fixed << std::setprecision(2)
-                  << std::setw(10) << r.post_cost << " "
-                  << std::scientific << std::setprecision(2)
-                  << std::setw(10) << r.post_violation << " "
-                  << " | "
-                  << std::setw(5) << r.osqp_iters << " "
-                  << std::fixed << std::setprecision(2)
-                  << std::setw(10) << r.cost_osqp
+                  << std::setw(4) << r.admm_iters
+                  << std::setw(3) << (r.admm_polished ? " *" : "")
+                  << std::setw(10) << std::fixed << std::setprecision(2) << r.post_cost
+                  << std::setw(10) << viol_ss.str()
+                  << "  |  "
+                  << std::setw(4) << r.osqp_iters
+                  << std::setw(10) << std::fixed << std::setprecision(2) << r.cost_osqp
                   << "\n";
     }
 
-    std::cout << std::string(SW, '=') << "\n";
+    std::cout << std::string(80, '-') << "\n";
 }
 
 // ---------------------------------------------------------------------------
