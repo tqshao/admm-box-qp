@@ -22,6 +22,11 @@ struct SolverConfig {
     double adapt_tolerance    = 5.0;
     double rho_min            = 1e-6;
     double rho_max            = 1e+6;
+
+    // Polishing (OSQP-style)
+    bool   polish             = true;
+    double polish_delta       = 1e-6;
+    int    polish_refine_iter = 3;
 };
 
 // Lateral planner parameters. Defaults can be overridden per-scenario in scenarios.json.

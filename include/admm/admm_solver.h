@@ -35,6 +35,13 @@ private:
                                    const Eigen::VectorXd& z,
                                    const Eigen::VectorXd& lambda) const;
 
+    // OSQP-style polishing: identify active set, solve reduced equality-constrained QP.
+    // Modifies y in-place if polishing succeeds.
+    void polishSolution(Eigen::VectorXd& y,
+                        const Eigen::VectorXd& z,
+                        const Eigen::VectorXd& lambda,
+                        ADMMResult& result) const;
+
     ProblemData data_;
     int nx_, nu_, ny_, n_eq_;
     bool use_riccati_ = false;

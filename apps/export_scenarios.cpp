@@ -21,8 +21,10 @@ struct TimingRecord {
     std::string name;
     double kkt_us;
     double solve_us;
+    double polish_us;
     int iterations;
     bool converged;
+    bool polished;
     double final_rho;
 };
 static std::vector<TimingRecord> g_timing;
@@ -44,6 +46,9 @@ static SolverConfig makeSolver(const nlohmann::json& j) {
     if (j.contains("rho_min"))         s.rho_min         = j["rho_min"];
     if (j.contains("rho_max"))         s.rho_max         = j["rho_max"];
     if (j.contains("use_riccati"))     s.use_riccati     = j["use_riccati"];
+    if (j.contains("polish"))          s.polish          = j["polish"];
+    if (j.contains("polish_delta"))    s.polish_delta    = j["polish_delta"];
+    if (j.contains("polish_refine_iter")) s.polish_refine_iter = j["polish_refine_iter"];
     return s;
 }
 
@@ -107,8 +112,10 @@ static void write_csv(const std::string& path,
     }
     f << "# converged=" << result.converged
       << " iterations=" << result.iterations
+      << " polished=" << result.polished
       << " kkt_us=" << result.time_kkt_us
-      << " solve_us=" << result.time_solve_us << "\n";
+      << " solve_us=" << result.time_solve_us
+      << " polish_us=" << result.time_polish_us << "\n";
 }
 
 static void write_csv_obstacle(const std::string& path,
@@ -147,8 +154,10 @@ static void write_csv_obstacle(const std::string& path,
     }
     f << "# converged=" << result.converged
       << " iterations=" << result.iterations
+      << " polished=" << result.polished
       << " kkt_us=" << result.time_kkt_us
-      << " solve_us=" << result.time_solve_us << "\n";
+      << " solve_us=" << result.time_solve_us
+      << " polish_us=" << result.time_polish_us << "\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +195,8 @@ static void run_scenario(const std::string& csv_dir,
     }
 
     g_timing.push_back({name, result.time_kkt_us, result.time_solve_us,
-                         result.iterations, result.converged, result.final_rho});
+                         result.time_polish_us, result.iterations,
+                         result.converged, result.polished, result.final_rho});
 
     std::string csv_path = csv_dir + "/" + name + ".csv";
     if (obs.empty()) {
@@ -206,24 +216,28 @@ static void run_scenario(const std::string& csv_dir,
 // Timing table
 // ---------------------------------------------------------------------------
 static void print_timing_table() {
-    std::cout << "\n" << std::string(78, '=') << "\n";
+    std::cout << "\n" << std::string(92, '=') << "\n";
     std::cout << std::left << std::setw(22) << "Scenario"
               << std::right
-              << std::setw(8) << "Conv" << std::setw(8) << "Iters"
+              << std::setw(6) << "Conv" << std::setw(4) << "P"
+              << std::setw(8) << "Iters"
               << std::setw(14) << "KKT [us]" << std::setw(14) << "Solve [us]"
+              << std::setw(14) << "Polish [us]"
               << std::setw(12) << "Total [ms]" << "\n";
-    std::cout << std::string(78, '-') << "\n";
+    std::cout << std::string(92, '-') << "\n";
 
     for (const auto& r : g_timing) {
-        double total_ms = (r.kkt_us + r.solve_us) / 1000.0;
+        double total_ms = (r.kkt_us + r.solve_us + r.polish_us) / 1000.0;
         std::cout << std::left << std::setw(22) << r.name << std::right
-                  << std::setw(8) << (r.converged ? "Y" : "N")
+                  << std::setw(6) << (r.converged ? "Y" : "N")
+                  << std::setw(4) << (r.polished ? "*" : " ")
                   << std::setw(8) << r.iterations
                   << std::setw(14) << std::fixed << std::setprecision(1) << r.kkt_us
                   << std::setw(14) << r.solve_us
+                  << std::setw(14) << r.polish_us
                   << std::setw(12) << std::setprecision(3) << total_ms << "\n";
     }
-    std::cout << std::string(78, '=') << "\n";
+    std::cout << std::string(92, '=') << "\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -269,14 +283,16 @@ int main(int argc, char* argv[]) {
     {
         std::string timing_path = csv_dir + "/_timing.csv";
         std::ofstream tf(timing_path);
-        tf << "name,converged,iterations,kkt_us,solve_us,total_ms,final_rho\n";
+        tf << "name,converged,polished,iterations,kkt_us,solve_us,polish_us,total_ms,final_rho\n";
         for (const auto& r : g_timing) {
-            double total_ms = (r.kkt_us + r.solve_us) / 1000.0;
+            double total_ms = (r.kkt_us + r.solve_us + r.polish_us) / 1000.0;
             tf << r.name << ","
                << (r.converged ? 1 : 0) << ","
+               << (r.polished ? 1 : 0) << ","
                << r.iterations << ","
                << r.kkt_us << ","
                << r.solve_us << ","
+               << r.polish_us << ","
                << total_ms << ","
                << r.final_rho << "\n";
         }

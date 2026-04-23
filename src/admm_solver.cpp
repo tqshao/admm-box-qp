@@ -430,6 +430,11 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
         result.time_solve_us =
             std::chrono::duration<double, std::micro>(solve_end - solve_start).count();
 
+        // Polishing (original space)
+        if (result.converged && data_.polish) {
+            polishSolution(y, z, lambda, result);
+        }
+
         // Extract trajectory
         result.x.resize(data_.N + 1);
         result.u.resize(data_.N);
@@ -540,6 +545,13 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
     // Unscale: y = D * y_s
     Eigen::VectorXd y = D_.asDiagonal() * y_s;
 
+    // Polishing (original space)
+    if (result.converged && data_.polish) {
+        Eigen::VectorXd z_orig     = D_.asDiagonal() * z_s;
+        Eigen::VectorXd lambda_orig = D_.asDiagonal() * lambda_s;
+        polishSolution(y, z_orig, lambda_orig, result);
+    }
+
     // Extract trajectory from y (now in original space)
     result.x.resize(data_.N + 1);
     result.u.resize(data_.N);
@@ -588,6 +600,227 @@ Eigen::VectorXd ADMMSolver::riccatiYUpdate(
         x0_vec = *data_.x0;
     }
     return riccati_->forward(x0_vec, data_.A, data_.B);
+}
+
+// ---------------------------------------------------------------------------
+// OSQP-style polishing: identify active set, solve reduced equality-constrained QP
+// ---------------------------------------------------------------------------
+void ADMMSolver::polishSolution(
+    Eigen::VectorXd& y,
+    const Eigen::VectorXd& z,
+    const Eigen::VectorXd& lambda,
+    ADMMResult& result) const
+{
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    const double delta = data_.polish_delta;
+
+    // --- Step 1: Active set identification (OSQP criterion) ---
+    // Lower-active: z_i - l_i < -lambda_i (small gap, negative dual)
+    // Upper-active: u_i - z_i < lambda_i  (small gap, positive dual)
+    // Equality:     l_i == u_i
+    std::vector<int> active_idx;
+    std::vector<double> active_val;
+
+    for (int i = 0; i < ny_; ++i) {
+        bool is_equality = std::abs(upper_bounds_[i] - lower_bounds_[i]) < 1e-12;
+        if (is_equality) {
+            active_idx.push_back(i);
+            active_val.push_back(lower_bounds_[i]);
+        } else if (z[i] - lower_bounds_[i] < -lambda[i]) {
+            active_idx.push_back(i);
+            active_val.push_back(lower_bounds_[i]);
+        } else if (upper_bounds_[i] - z[i] < lambda[i]) {
+            active_idx.push_back(i);
+            active_val.push_back(upper_bounds_[i]);
+        }
+    }
+
+    int n_active = static_cast<int>(active_idx.size());
+    if (n_active == 0) {
+        // No active bounds → unconstrained optimum is feasible, nothing to polish
+        return;
+    }
+
+    // --- Step 2: Build polishing KKT (original space, no Ruiz) ---
+    //
+    // [H + δI      C^T       S^T    ] [y  ]   [δ·y_admm]
+    // [C           -εI       0      ] [ν  ] = [d       ]
+    // [S            0       -δI     ] [μ  ]   [b_act   ]
+    //
+    // where S is n_active × ny selection matrix for active bound constraints,
+    // and b_act are the corresponding bound values.
+
+    const int dim = ny_ + n_eq_ + n_active;
+    const bool has_x0 = data_.x0.has_value();
+    const int n_dyn   = data_.N * nx_;
+    const int stride  = nx_ + nu_;
+
+    // Equality constraint RHS: d
+    Eigen::VectorXd d(n_eq_);
+    d.setZero();
+    if (has_x0) d.tail(nx_) = *data_.x0;
+
+    const int nnz_estimate =
+        data_.N * (nx_ * nx_ + nu_ * nu_) + nx_ * nx_
+        + ny_ + n_eq_ + n_active            // diagonal entries
+        + 2 * data_.N * (nx_ * nx_ + nx_ * nu_ + nx_)
+        + (has_x0 ? 2 * nx_ : 0)
+        + 2 * n_active;                      // S and S^T
+
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(nnz_estimate);
+
+    // --- Top-left block: H + δI ---
+    int idx = 0;
+    for (int k = 0; k < data_.N; ++k) {
+        for (int i = 0; i < nx_; ++i)
+            for (int j = 0; j < nx_; ++j)
+                triplets.emplace_back(idx + i, idx + j, data_.Q(i, j));
+        idx += nx_;
+        for (int i = 0; i < nu_; ++i)
+            for (int j = 0; j < nu_; ++j)
+                triplets.emplace_back(idx + i, idx + j, data_.R(i, j));
+        idx += nu_;
+    }
+    for (int i = 0; i < nx_; ++i)
+        for (int j = 0; j < nx_; ++j)
+            triplets.emplace_back(idx + i, idx + j, data_.P(i, j));
+
+    // δI diagonal
+    for (int i = 0; i < ny_; ++i)
+        triplets.emplace_back(i, i, delta);
+
+    // --- Dynamics constraints C and C^T ---
+    for (int k = 0; k < data_.N; ++k) {
+        const int row     = k * nx_;
+        const int col_xk  = k * stride;
+        const int col_uk  = k * stride + nx_;
+        const int col_xk1 = (k + 1) * stride;
+
+        for (int i = 0; i < nx_; ++i) {
+            for (int j = 0; j < nx_; ++j) {
+                const double val = -data_.A(i, j);
+                triplets.emplace_back(ny_ + row + i, col_xk + j, val);
+                triplets.emplace_back(col_xk + j, ny_ + row + i, val);
+            }
+            for (int j = 0; j < nu_; ++j) {
+                const double val = -data_.B(i, j);
+                triplets.emplace_back(ny_ + row + i, col_uk + j, val);
+                triplets.emplace_back(col_uk + j, ny_ + row + i, val);
+            }
+            triplets.emplace_back(ny_ + row + i, col_xk1 + i, 1.0);
+            triplets.emplace_back(col_xk1 + i, ny_ + row + i, 1.0);
+        }
+    }
+
+    // Initial state constraint
+    if (has_x0) {
+        const int row0 = n_dyn;
+        for (int i = 0; i < nx_; ++i) {
+            triplets.emplace_back(ny_ + row0 + i, i, 1.0);
+            triplets.emplace_back(i, ny_ + row0 + i, 1.0);
+        }
+    }
+
+    // --- Bottom-right (dynamics): -εI ---
+    for (int i = 0; i < n_eq_; ++i)
+        triplets.emplace_back(ny_ + i, ny_ + i, -data_.kkt_reg);
+
+    // --- Active bound constraints S and S^T ---
+    const int s_row = ny_ + n_eq_;
+    for (int i = 0; i < n_active; ++i) {
+        int col = active_idx[i];
+        triplets.emplace_back(s_row + i, col, 1.0);
+        triplets.emplace_back(col, s_row + i, 1.0);
+    }
+
+    // --- Active constraint diagonal: -δI ---
+    for (int i = 0; i < n_active; ++i)
+        triplets.emplace_back(s_row + i, s_row + i, -delta);
+
+    // --- Build and factorize ---
+    Eigen::SparseMatrix<double> K(dim, dim);
+    K.setFromTriplets(triplets.begin(), triplets.end());
+    K.makeCompressed();
+
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> polish_solver;
+    polish_solver.compute(K);
+    if (polish_solver.info() != Eigen::Success) return;
+
+    // --- RHS ---
+    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(dim);
+    rhs.head(ny_) = delta * y;                // warm-start regularization
+    rhs.segment(ny_, n_eq_) = d;              // dynamics RHS
+    for (int i = 0; i < n_active; ++i)
+        rhs(s_row + i) = active_val[i];       // bound values
+
+    Eigen::VectorXd sol = polish_solver.solve(rhs);
+    if (polish_solver.info() != Eigen::Success) return;
+
+    // --- Step 3: Iterative refinement ---
+    // Remove regularization error by refining against the true KKT:
+    //   res = [0; d; b_act] - K_true * sol
+    // Using: K_true = K_reg - diag(δI, -εI, -δI) + diag(0, 0, 0)
+    //       (only (1,1) and (3,3) blocks differ by δ)
+    // And:  K_reg * sol_0 = [δ*y_admm; d; b_act]
+    //
+    // After initial solve, for each refinement iteration:
+    //   res = true_rhs - K_true * sol
+    //   dsol = K_reg \ res
+    //   sol += dsol
+    for (int r = 0; r < data_.polish_refine_iter; ++r) {
+        Eigen::VectorXd true_rhs = Eigen::VectorXd::Zero(dim);
+        true_rhs.segment(ny_, n_eq_) = d;
+        for (int i = 0; i < n_active; ++i)
+            true_rhs(s_row + i) = active_val[i];
+
+        // K_true * sol: compute residual using K_reg product
+        // res = true_rhs - K_true * sol
+        //     = true_rhs - (K_reg - D_reg) * sol    where D_reg = diag(δ,0,...,0, -ε, ..., -δ)
+        //     = true_rhs - K_reg*sol + D_reg*sol
+        //
+        // Since K_reg * sol = rhs was the initial solve, but sol has been updated:
+        // We compute K_reg * sol explicitly (matrix-vector product)
+        Eigen::VectorXd Kreg_sol = K * sol;
+        // D_reg * sol: only the extra diagonal terms
+        Eigen::VectorXd Dreg_sol = Eigen::VectorXd::Zero(dim);
+        for (int i = 0; i < ny_; ++i)
+            Dreg_sol(i) = delta * sol(i);
+        for (int i = 0; i < n_eq_; ++i)
+            Dreg_sol(ny_ + i) = -data_.kkt_reg * sol(ny_ + i);
+        for (int i = 0; i < n_active; ++i)
+            Dreg_sol(s_row + i) = -delta * sol(s_row + i);
+
+        Eigen::VectorXd res = true_rhs - Kreg_sol + Dreg_sol;
+
+        Eigen::VectorXd dsol = polish_solver.solve(res);
+        if (polish_solver.info() != Eigen::Success) break;
+        sol += dsol;
+    }
+
+    // --- Step 4: Extract and validate ---
+    Eigen::VectorXd y_pol = sol.head(ny_);
+
+    // Check feasibility (with tolerance)
+    const double feas_tol = 1e-6;
+    for (int i = 0; i < ny_; ++i) {
+        if (y_pol[i] < lower_bounds_[i] - feas_tol ||
+            y_pol[i] > upper_bounds_[i] + feas_tol) {
+            return;  // infeasible, keep ADMM solution
+        }
+    }
+
+    // Clip to ensure strict feasibility
+    y_pol = y_pol.cwiseMax(lower_bounds_).cwiseMin(upper_bounds_);
+
+    // Accept polished solution
+    y = y_pol;
+    result.polished = true;
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    result.time_polish_us =
+        std::chrono::duration<double, std::micro>(t1 - t0).count();
 }
 
 }  // namespace admm

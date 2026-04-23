@@ -121,6 +121,9 @@ LateralPlanner::LateralPlanner(const PlannerConfig& planner_cfg,
     problem_data_.rho_min       = solver_cfg_.rho_min;
     problem_data_.rho_max       = solver_cfg_.rho_max;
     problem_data_.use_riccati   = solver_cfg_.use_riccati;
+    problem_data_.polish        = solver_cfg_.polish;
+    problem_data_.polish_delta  = solver_cfg_.polish_delta;
+    problem_data_.polish_refine_iter = solver_cfg_.polish_refine_iter;
 }
 
 ADMMResult LateralPlanner::plan(const Eigen::VectorXd& x0,

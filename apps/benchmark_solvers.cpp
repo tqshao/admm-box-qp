@@ -33,6 +33,9 @@ static SolverConfig makeSolver(const nlohmann::json& j) {
     if (j.contains("rho_min"))         s.rho_min         = j["rho_min"];
     if (j.contains("rho_max"))         s.rho_max         = j["rho_max"];
     if (j.contains("use_riccati"))     s.use_riccati     = j["use_riccati"];
+    if (j.contains("polish"))          s.polish          = j["polish"];
+    if (j.contains("polish_delta"))    s.polish_delta    = j["polish_delta"];
+    if (j.contains("polish_refine_iter")) s.polish_refine_iter = j["polish_refine_iter"];
     return s;
 }
 

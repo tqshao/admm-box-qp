@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-04-23
+
+### Added
+
+- OSQP-style solution polishing: after ADMM convergence, identifies active constraint set via complementary slackness criterion (z_i - l_i < -λ_i or u_i - z_i < λ_i), builds reduced equality-constrained KKT with active bounds fixed, solves with regularization (δ=1e-6) + iterative refinement (3 steps), accepts only if feasible
+- `polish`, `polish_delta`, `polish_refine_iter` parameters in SolverConfig / ProblemData (polishing enabled by default)
+- `polished` flag and `time_polish_us` in ADMMResult
+- Polishing timing column in export_scenarios output table
+- Polish status (`polished=N`) in CSV metadata comments
+- README fully rewritten with algorithm documentation for all features: Ruiz equilibration, adaptive rho, over-relaxation, Riccati, and polishing
+
+### Changed
+
+- README algorithm section now documents all 8 subsections: problem definition, ADMM splitting, iterations, Ruiz equilibration, adaptive rho, polishing, Riccati, and performance summary
+- CLAUDE.md updated to reflect polishing, dual-path architecture, and OSQP convention over-relaxation
+
 ## [1.1.0] - 2025-04-22
 
 ### Added

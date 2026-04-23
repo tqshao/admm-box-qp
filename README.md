@@ -4,34 +4,45 @@ C++ implementation of an ADMM-based solver for box-constrained linear-quadratic 
 
 ## Features
 
-- **ADMM Solver** with pre-factorized KKT system (LDL^T sparse factorization)
+- **ADMM Solver** with two y-update backends:
+  - **LDL^T path**: Sparse KKT factorization with Ruiz equilibration
+  - **Riccati path**: O(N) backward-forward recursion exploiting block-bidiagonal structure
+- **OSQP-style Ruiz equilibration**: diagonal scaling of problem data before KKT formation so ρ·I is a plain identity in scaled space
+- **Solution polishing**: post-convergence active-set identification + reduced KKT solve for higher accuracy
 - **Triple integrator** lateral dynamics: state = [y, vy, ay], input = [jerk]
 - **Box constraints** on position, velocity, acceleration, and jerk
 - **Obstacle avoidance** via time-varying constraint bounds
-- **Adaptive rho** — automatically tunes penalty parameter for faster convergence
-- **Warm-start** interface for MPC online receding-horizon use
+- **Adaptive rho** with tempered update (OSQP-style)
+- **Over-relaxation** using ŷ in primal residual (OSQP convention)
+- **Warm-start** interface for MPC receding-horizon applications
 - **JSON configuration** for solver, planner, and scenario parameters
 - **Python visualization** with 4-panel trajectory plots and timing analysis
+- **OSQP benchmark**: optional side-by-side comparison against OSQP on identical problems
 
 ## Project Structure
 
 ```
-include/admm/       Core headers
+include/admm/
   types.h             ProblemData, ADMMResult, WarmStart
-  admm_solver.h       ADMMSolver class (KKT pre-factorization + ADMM loop)
+  admm_solver.h       ADMMSolver (KKT + Riccati dual-path, Ruiz, polishing)
+  riccati_solver.h    RiccatiSolver (backward-forward y-update)
+  osqp_solver.h       OsqpSolver (benchmark wrapper, optional)
   lateral_planner.h   SolverConfig, PlannerConfig, LateralPlanner, ObstacleRegion
 src/
-  admm_solver.cpp     ADMM solver implementation
-  lateral_planner.cpp Lateral planner with triple integrator dynamics + JSON loader
+  admm_solver.cpp     ADMM solver with Ruiz scaling, over-relaxation, adaptive rho, polishing
+  riccati_solver.cpp  Riccati recursion with gain caching
+  osqp_solver.cpp     OSQP C interface wrapper
+  lateral_planner.cpp Lateral planner with triple integrator dynamics
 apps/
-  export_scenarios.cpp  Run all scenarios from JSON, export CSV
+  export_scenarios.cpp   Run all scenarios from JSON, export CSV + timing
+  benchmark_solvers.cpp  ADMM (LDLT/Riccati) vs OSQP comparison
 tests/
-  test_admm.cpp         Unit tests for core solver
+  test_admm.cpp          Unit tests for core solver
   test_lateral_planner.cpp  Unit tests for lateral planner
 configs/
-  scenarios.json         9 test scenario definitions (planner/solver overrides per scenario)
+  scenarios.json          9 test scenarios with solver/planner overrides
 scripts/
-  plot_results.py        Generate PNG plots from CSV
+  plot_results.py         Generate PNG plots from CSV
 ```
 
 ## Build
@@ -46,39 +57,41 @@ cmake -B build -DCMAKE_CXX_COMPILER=g++-11
 cmake --build build -j$(nproc)
 ```
 
-Dependencies (Eigen3, nlohmann/json, Google Test) are fetched automatically via CMake FetchContent.
+Dependencies (Eigen3, nlohmann/json, Google Test, OSQP) are fetched automatically via CMake FetchContent.
 
 ## Usage
 
 ### Run Tests
 
 ```bash
-cd build
-ctest --output-on-failure
+cd build && ctest --output-on-failure
 ```
 
 ### Export Scenario Data
 
 ```bash
-# Default: output to figures/
-./build/export_scenarios figures
-
-# Custom output dir and scenario config
-./build/export_scenarios output_dir path/to/scenarios.json
+./build/export_scenarios figures configs/scenarios.json
 ```
 
-This reads `configs/scenarios.json`, runs each scenario, and writes CSV files to `figures/csv/`.
+This reads `configs/scenarios.json`, runs each scenario (with polishing enabled by default), and writes CSV files to `figures/csv/`.
 
 ### Generate Plots
 
 ```bash
-cd /path/to/project
 MPLBACKEND=Agg python3 scripts/plot_results.py
 ```
 
 Generates:
 - `figures/png/<scenario>.png` — 4-panel trajectory plots (position, velocity, acceleration, jerk), with top-view for obstacle scenarios
 - `figures/png/_timing_summary.png` — solver timing and iteration comparison chart
+
+### Benchmark Against OSQP
+
+```bash
+./build/benchmark_solvers configs/scenarios.json
+```
+
+Runs ADMM-LDLT, ADMM-Riccati, and OSQP on all scenarios, prints side-by-side comparison of iterations, solve time, and objective cost.
 
 ### Use as a Library
 
@@ -88,6 +101,7 @@ Generates:
 admm::PlannerConfig pc;   // uses struct defaults
 admm::SolverConfig  sc;
 sc.adaptive_rho = true;   // enable adaptive penalty
+sc.polish = true;         // enable solution polishing (default)
 
 admm::LateralPlanner planner(pc, sc);
 
@@ -101,10 +115,9 @@ auto result = planner.plan(x0);
 std::vector<admm::ObstacleRegion> obs = {{-0.5, 1.75, 8, 16}};
 result = planner.plan(x0, obs);
 
-// Warm-start from previous solution (for MPC)
-admm::WarmStart warm;
-// ... fill warm.y, warm.z, warm.lambda from previous ADMMResult ...
-result = planner.plan(x0, obs, warm);
+// Check result
+bool ok = result.converged;
+bool polished = result.polished;  // true if polishing improved the solution
 ```
 
 ### Scenario Configuration
@@ -116,14 +129,13 @@ Scenarios are defined in `configs/scenarios.json`. Each entry overrides defaults
   "name": "my_scenario",
   "x0": [0.5, 0.0, 0.0],
   "planner": {
-    "N": 30,
-    "lane_half_width": 1.75,
-    "max_lat_vel": 1.0,
-    "max_lat_acc": 3.0,
-    "max_lat_jerk": 10.0
+    "N": 80,
+    "lane_half_width": 1.75
   },
   "solver": {
+    "rho": 10.0,
     "adaptive_rho": true,
+    "polish": true,
     "max_iter": 3000
   },
   "obstacles": [
@@ -137,173 +149,175 @@ Scenarios are defined in `configs/scenarios.json`. Each entry overrides defaults
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `rho` | 10.0 | ADMM penalty parameter |
-| `alpha` | 1.6 | Over-relaxation factor |
-| `eps_pri` | 1e-3 | Primal residual tolerance |
-| `eps_dual` | 1e-3 | Dual residual tolerance |
+| `alpha` | 1.6 | Over-relaxation factor ∈ [1.5, 1.8] |
+| `eps_abs` | 1e-3 | Absolute tolerance |
+| `eps_rel` | 1e-3 | Relative tolerance |
 | `max_iter` | 2000 | Maximum ADMM iterations |
-| `adaptive_rho` | false | Auto-tune rho for convergence |
+| `adaptive_rho` | false | Enable OSQP-style adaptive rho |
 | `adapt_interval` | 25 | Check interval for rho adaptation |
-| `adapt_ratio` | 10.0 | Primal/dual ratio threshold |
-| `adapt_factor` | 2.0 | Rho multiply/divide factor |
+| `adapt_tolerance` | 5.0 | Minimum change ratio to trigger refactorization |
+| `use_riccati` | false | Use Riccati recursion instead of sparse LDLT |
+| `polish` | true | Enable post-convergence solution polishing |
+| `polish_delta` | 1e-6 | Regularization for polishing KKT |
+| `polish_refine_iter` | 3 | Iterative refinement steps in polishing |
 
 **Planner parameters:**
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `dt` | 0.1 | Time step [s] |
-| `N` | 30 | Horizon length (steps) |
+| `N` | 80 | Horizon length (steps) |
 | `lane_half_width` | 1.75 | Half lane width [m] |
-| `max_lat_vel` | 1.0 | Max lateral velocity [m/s] |
-| `max_lat_acc` | 3.0 | Max lateral acceleration [m/s^2] |
-| `max_lat_jerk` | 10.0 | Max lateral jerk [m/s^3] |
+| `max_lat_vel` | 1.5 | Max lateral velocity [m/s] |
+| `max_lat_acc` | 3.0 | Max lateral acceleration [m/s²] |
+| `max_lat_jerk` | 10.0 | Max lateral jerk [m/s³] |
 
 ---
 
 # Algorithm
+
 ## 1. Problem Definition
-
-The goal is to solve a Linear-Quadratic Regulator (LQR) trajectory optimization problem over a horizon $N$, subject to both system dynamics and state/input box constraints.
-
-### Objective Function (Cost)
 
 $$\min_{\mathbf{x, u}} \quad \frac{1}{2} \sum_{k=0}^{N-1} (x_k^T Q x_k + u_k^T R u_k) + \frac{1}{2} x_N^T P x_N$$
 
-### Constraints
-
+subject to:
 1. **Linear Dynamics:** $x_{k+1} = A x_k + B u_k, \quad k=0, \dots, N-1$
-
-2. **Boundary Constraints:** $x_{min} \le x_k \le x_{max}, \quad u_{min} \le u_k \le u_{max}$
-
-
----
+2. **Box Constraints:** $l \le y \le u$ where $y = [x_0, u_0, \dots, x_N]^T$
 
 ## 2. ADMM Variable Splitting
 
-To apply ADMM, we decouple the "coupled physics" from the "local boundaries" by splitting the variables into two sets:
+Decouple the "coupled physics" from the "local boundaries":
 
-- **Variable $\mathbf{y}$ (The "Physics" Expert):** Contains the full trajectory $[x_0, u_0, \dots, x_N]^T$. This variable is responsible for strictly satisfying the **system dynamics**.
+- **$y$ (Physics Expert):** Full trajectory vector satisfying dynamics
+- **$z$ (Boundary Expert):** Same dimension, satisfying box constraints
 
-- **Variable $\mathbf{z}$ (The "Boundary" Expert):** A vector of the same dimension as $y$. This variable is responsible for strictly staying within **box constraints**.
+**Consensus form:** $\min_{y,z} f(y) + g(z) \quad \text{s.t. } y - z = 0$
 
+## 3. ADMM Iterations
 
-**Consensus Form:**
+### Step 1: $y$-Update (KKT or Riccati)
 
-$$\min_{y, z} \quad f(y) + g(z) \quad \text{s.t. } y - z = 0$$
+$$y^{k+1} = \arg\min_y \frac{1}{2}y^T (\mathbf{H} + \rho \mathbf{I})\, y - y^T(\rho\, z^k - \lambda^k) \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
 
-Where $f(y)$ handles the cost and dynamics, and $g(z)$ is the indicator function for the boundary constraints.
+KKT system:
 
----
+$$\begin{bmatrix} \mathbf{H} + \rho \mathbf{I} & \mathbf{C}^T \\ \mathbf{C} & -\varepsilon \mathbf{I} \end{bmatrix} \begin{bmatrix} y^{k+1} \\ \nu \end{bmatrix} = \begin{bmatrix} \rho z^k - \lambda^k \\ \mathbf{d} \end{bmatrix}$$
 
-## 3. The Iterative Algorithm
-
-Given a penalty parameter $\rho > 0$ and dual variables (multipliers) $\lambda$, perform the following three steps in each iteration:
-
-### Step 1: $y$-Update (Solving the Global KKT System)
-
-Starting from the **augmented Lagrangian** of the consensus problem:
-
-$$\mathcal{L}_\rho(y, z, \lambda) = f(y) + g(z) + \lambda^T(y - z) + \frac{\rho}{2}\|y - z\|^2$$
-
-The $y$-update fixes $z = z^k$ and $\lambda = \lambda^k$, and minimizes over $y$:
-
-$$y^{k+1} = \arg\min_{y} \; f(y) + \lambda^{k,T}(y - z^k) + \frac{\rho}{2}\|y - z^k\|^2 \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
-
-Completing the square (absorbing constant terms w.r.t. $y$):
-
-$$y^{k+1} = \arg\min_{y} \; f(y) + \frac{\rho}{2}\left\|y - z^k + \frac{\lambda^k}{\rho}\right\|^2 \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
-
-Since $f(y) = \frac{1}{2}y^T \mathbf{H} y$ is quadratic (the stacked LQR cost), this subproblem is an **equality-constrained QP**:
-
-$$\min_{y} \quad \frac{1}{2}y^T (\mathbf{H} + \rho \mathbf{I})\, y - y^T(\rho\, z^k - \lambda^k) \quad \text{s.t. } \mathbf{C}y = \mathbf{d}$$
-
-Introduce KKT multiplier $\nu$ for the equality constraint $\mathbf{C}y = \mathbf{d}$, the **first-order optimality conditions** are:
-
-$$\frac{\partial}{\partial y}: \quad (\mathbf{H} + \rho \mathbf{I})\, y + \mathbf{C}^T \nu = \rho\, z^k - \lambda^k$$
-
-$$\frac{\partial}{\partial \nu}: \quad \mathbf{C}y = \mathbf{d}$$
-
-Written in **block matrix form**:
-
-$$\begin{bmatrix} \mathbf{H} + \rho \mathbf{I} & \mathbf{C}^T \\ \mathbf{C} & \mathbf{0} \end{bmatrix} \begin{bmatrix} y^{k+1} \\ \nu \end{bmatrix} = \begin{bmatrix} \rho z^k - \lambda^k \\ \mathbf{d} \end{bmatrix}$$
-
-**Matrix definitions:**
-
-- **$\mathbf{H}$**: Block-diagonal Hessian of the LQR cost, composed of $Q, R, P$:
-
-$$\mathbf{H} = \mathrm{diag}(\underbrace{Q, R, \dots, Q, R}_{N \text{ stages}}, P)$$
-
-- **$\mathbf{C}, \mathbf{d}$**: Linear equality constraints encoding the **dynamics**. Each block-row $k$ enforces $x_{k+1} - A x_k - B u_k = d_k$. For the standard trajectory problem, $d_k = 0$ (homogeneous dynamics). If an initial state $\bar{x}_0$ is provided, additional rows enforce $x_0 = \bar{x}_0$, giving:
-
-$$\mathbf{d} = \begin{bmatrix} \mathbf{0}_{N \cdot n_x} \\ \bar{x}_0 \end{bmatrix}$$
-
-> **Key insight:** The left-hand side KKT matrix is **constant** across iterations (it depends only on $\mathbf{H}$, $\mathbf{C}$, and $\rho$). This allows **pre-factorization** — factorize once offline, and each iteration only requires a back-substitution with the updated right-hand side. 
-
+**Two solver backends:**
+- **LDLT**: Sparse factorization (with Ruiz equilibration) of the full KKT matrix. Factorize once, back-substitute each iteration.
+- **Riccati**: Exploit block-bidiagonal structure for O(N·nx³) backward-forward recursion.
 
 ### Step 2: $z$-Update (Element-wise Projection)
 
-Find $z^{k+1}$ that satisfies the boundaries while staying close to $y^{k+1}$:
+$$z^{k+1} = \Pi_{[l,u]}(\hat{y}^{k+1} + \lambda^k / \rho)$$
 
-$$z^{k+1} = \Pi_{\mathcal{Z}} (y^{k+1} + \frac{\lambda^k}{\rho})$$
-
-**Operation (Clipping):** For each element $v_i$ in the vector:
-
-$$z_i^{k+1} = \max(bound_{min}, \min(bound_{max}, v_i))$$
+where $\hat{y} = \alpha y + (1-\alpha) z$ is the over-relaxed variable.
 
 ### Step 3: $\lambda$-Update (Dual Ascent)
 
-Update the "pressure" to enforce the $y=z$ agreement:
+$$\lambda^{k+1} = \lambda^k + \rho (\hat{y}^{k+1} - z^{k+1})$$
 
-$$\lambda^{k+1} = \lambda^k + \rho (y^{k+1} - z^{k+1})$$
+### Convergence (OSQP Convention)
 
----
-
-## 4. Implementation & Performance Optimization
-
-### 4.1 Pre-factorization (The "Secret Sauce")
-
-Since the left-hand side of the KKT matrix is constant (assuming constant $\rho$ and linear dynamics), you should **not** re-solve the matrix from scratch:
-
-1. **Offline Phase:** Compute the **$LDL^T$ sparse factorization** of the KKT matrix once.
-
-2. **Online Phase:** In each ADMM iteration, perform only **Back-substitution**. This reduces the per-iteration complexity from $O(N^3)$ to **$O(N)$**.
-
-
-### 4.2 Over-relaxation
-
-Accelerate convergence by introducing a relaxation factor $\alpha \in [1.5, 1.8]$. Replace $y^{k+1}$ in the $z$ and $\lambda$ updates with:
-
-$$\hat{y}^{k+1} = \alpha y^{k+1} + (1 - \alpha) z^k$$
-
-### 4.3 Adaptive Penalty ($\rho$)
-
-When `adaptive_rho` is enabled, the solver automatically adjusts $\rho$ every `adapt_interval` iterations based on the primal/dual residual ratio:
-
-- If primal residual $> \mu \times$ dual residual: $\rho \leftarrow \rho \times \tau$, re-factorize KKT
-- If dual residual $> \mu \times$ primal residual: $\rho \leftarrow \rho / \tau$, re-factorize KKT
-
-This eliminates the need for manual rho tuning across different scenarios.
-
-### 4.4 Warm-Start
-
-For MPC applications, the `WarmStart` struct allows initializing ADMM variables (y, z, lambda) from a previous solution. This can significantly reduce iteration count when consecutive planning problems are similar.
-
-### 4.5 Stopping Criteria
-
-Terminate the algorithm when both residuals are below your threshold:
-
-- **Primal Residual:** $\|y^{k+1} - z^{k+1}\|_\infty \le \epsilon_{pri}$ (Ensures feasibility)
-
-- **Dual Residual:** $\|\rho(z^{k+1} - z^k)\|_\infty \le \epsilon_{dual}$ (Ensures optimality)
-
-
-> Note: Based on your requirement, $\epsilon \approx 10^{-3}$ is a solid engineering target.
+- **Primal:** $\|\hat{y} - z\|_\infty \le \epsilon_\text{abs} + \epsilon_\text{rel} \max(\|\hat{y}\|_\infty, \|z\|_\infty)$
+- **Dual:** $\|\rho(z - z^\text{prev})\|_\infty \le \epsilon_\text{abs} + \epsilon_\text{rel} \|\lambda\|_\infty$
 
 ---
 
-## 5. Summary of the Solution
+## 4. Ruiz Equilibration (LDLT Path)
 
-- **Pros:** Avoids complex active-set logic for inequality constraints; each iteration involves only basic linear algebra; highly parallelizable.
+Before forming the KKT matrix, compute diagonal scaling vectors $D$ (primal, size $n_y$) and $E$ (dual, size $n_\text{eq}$) via iterative equilibration on the base KKT matrix (without $\rho I$):
 
-- **Best For:** Real-time MPC with heavy state/input box constraints.
+1. Build base KKT: $K_0 = \begin{bmatrix} H & C^T \\ C & -\varepsilon I \end{bmatrix}$
 
-- **Numerical Tip:** If the KKT matrix is ill-conditioned, add a tiny regularization term $-\epsilon \mathbf{I}$ (e.g., $10^{-12}$) to the bottom-right zero block.
+2. For $i = 1, \dots, 10$: compute per-element scaling $\delta_j = 1/\sqrt{\max(\|K_{i-1,j:}\|_\infty, \|K_{i-1,:j}\|_\infty)}$, then $K_i = \text{diag}(\delta) K_{i-1} \text{diag}(\delta)$
+
+3. Accumulated scaling: $D = \prod \delta[0:n_y]$, $E = \prod \delta[n_y:]$
+
+4. Build scaled KKT: $\begin{bmatrix} DHD + \rho I & (ECD)^T \\ ECD & -E\varepsilon E \end{bmatrix}$
+
+The key insight: $\rho I$ is a **plain diagonal** in the scaled space (not conjugated by $D^2$), making $\rho$ tuning unnecessary.
+
+---
+
+## 5. Adaptive Rho
+
+When enabled, adjust $\rho$ every `adapt_interval` iterations:
+
+1. **Estimate:** $\hat\rho = \sqrt{r_\text{prim} / r_\text{dual}}$
+2. **Temper:** $\rho_\text{new} = \rho \cdot \hat\rho^{0.3}$
+3. **Clamp:** $\rho_\text{new} \in [\rho_\text{min}, \rho_\text{max}]$
+4. **Gate:** only apply if $|\rho_\text{new}/\rho| > $ `adapt_tolerance`
+
+The tempered update ($\hat\rho^{0.3}$ instead of $\hat\rho$) prevents oscillation.
+
+---
+
+## 6. Solution Polishing (OSQP-Style)
+
+After ADMM converges, a polishing step attempts to recover a **higher-accuracy solution** by identifying the active constraint set and solving a single reduced equality-constrained QP.
+
+### 6.1 Active Set Identification
+
+For each element $i$ of the stacked vector $y$, examine the auxiliary variable $z$ and dual variable $\lambda$:
+
+- **Lower-active:** $z_i - l_i < -\lambda_i$ (small gap + negative dual)
+- **Upper-active:** $u_i - z_i < \lambda_i$ (small gap + positive dual)
+- **Equality:** $l_i = u_i$
+
+This criterion comes from the KKT complementary slackness: when a constraint is active, the gap between $z$ and its bound is small while the dual has the appropriate sign.
+
+### 6.2 Reduced KKT System
+
+Let $\mathcal{A}$ be the set of active bound indices with values $b_\mathcal{A}$. The polishing QP fixes active bounds as equalities:
+
+$$\min_y \frac{1}{2} y^T H y \quad \text{s.t. } Cy = d, \quad y_\mathcal{A} = b_\mathcal{A}$$
+
+With regularization $\delta$ for numerical stability, the polishing KKT is:
+
+$$\begin{bmatrix} H + \delta I & C^T & S^T \\ C & -\varepsilon I & 0 \\ S & 0 & -\delta I \end{bmatrix} \begin{bmatrix} y \\ \nu \\ \mu \end{bmatrix} = \begin{bmatrix} \delta \cdot y_\text{ADMM} \\ d \\ b_\mathcal{A} \end{bmatrix}$$
+
+where $S$ is the $|\mathcal{A}| \times n_y$ selection matrix for active constraints.
+
+### 6.3 Iterative Refinement
+
+The regularization $\delta$ introduces a small perturbation. Iterative refinement removes it:
+
+$$\text{For } r = 1, \dots, R: \quad \Delta z = K_\text{reg}^{-1}(b_\text{true} - K_\text{true} z), \quad z \leftarrow z + \Delta z$$
+
+### 6.4 Acceptance
+
+The polished solution is accepted only if it is feasible (all bounds satisfied within tolerance). Otherwise, the ADMM solution is kept unchanged.
+
+---
+
+## 7. Riccati Y-Update
+
+When `use_riccati = true`, the y-update exploits the block-bidiagonal KKT structure for O(N·nx³) instead of a full sparse factorization:
+
+**Backward pass** (k = N-1 → 0):
+$$S_N = P + \rho I, \quad \Sigma_k = R + \rho I + B^T S_{k+1} B$$
+$$K_k = \Sigma_k^{-1} B^T S_{k+1}, \quad S_k = Q + \rho I + A^T(S_{k+1} - S_{k+1} B \Sigma_k^{-1} B^T S_{k+1}) A$$
+
+**Forward pass** (k = 0 → N-1):
+$$u_k = -K_k x_k - k^\text{ff}_k, \quad x_{k+1} = A x_k + B u_k$$
+
+Gain matrices $K_k$, $S_k$ are cached and only recomputed when $\rho$ changes. Linear terms $k^\text{ff}_k$ are updated every iteration.
+
+---
+
+## 8. Performance Summary
+
+Typical results on 9 scenarios (N=80, nx=3, nu=1):
+
+| Scenario | LDLT Iters | Polished | Total Time |
+|----------|-----------|----------|------------|
+| 01 Lane keeping center | 1 | - | 0.5 ms |
+| 02 Lane keeping offset | 18 | - | 0.4 ms |
+| 03 Near boundary | 26 | - | 0.6 ms |
+| 04 Offset + velocity | 16 | - | 0.4 ms |
+| 05 Active avoidance | 26 | - | 0.6 ms |
+| 06 Swerve left | 112 | Yes | 1.6 ms |
+| 07 Swerve right | 112 | Yes | 1.6 ms |
+| 08 S-curve | 442 | - | 4.2 ms |
+| 09 Narrow gap | 111 | Yes | 1.6 ms |

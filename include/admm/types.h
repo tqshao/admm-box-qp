@@ -52,6 +52,11 @@ struct ProblemData {
     double rho_min            = 1e-6;    // lower bound on rho
     double rho_max            = 1e+6;    // upper bound on rho
 
+    // Polishing (OSQP-style)
+    bool   polish             = true;    // enable solution polishing after ADMM convergence
+    double polish_delta       = 1e-6;    // regularization for polishing KKT
+    int    polish_refine_iter = 3;       // iterative refinement steps
+
     // Optional: fix initial state
     std::optional<Eigen::VectorXd> x0;
 
@@ -82,6 +87,10 @@ struct ADMMResult {
 
     // Final rho value (useful when adaptive_rho is enabled)
     double final_rho = 0.0;
+
+    // Polishing result
+    bool   polished = false;        // true if polishing was attempted and accepted
+    double time_polish_us = 0.0;    // polishing time (microseconds)
 
     // Timing (microseconds)
     double time_kkt_us = 0.0;  // KKT build + factorization
