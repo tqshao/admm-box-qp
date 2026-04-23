@@ -1,5 +1,5 @@
-// Benchmark: runs both ADMM and OSQP solvers on all scenarios and prints
-// a side-by-side comparison table.
+// Benchmark: runs ADMM (with/without polish) and OSQP on all scenarios
+// and prints a side-by-side comparison table with pre/post-polish metrics.
 //
 // Usage: benchmark_solvers [config_path]
 
@@ -17,7 +17,7 @@
 using namespace admm;
 
 // ---------------------------------------------------------------------------
-// JSON → config helpers (same as export_scenarios.cpp)
+// JSON -> config helpers (same as export_scenarios.cpp)
 // ---------------------------------------------------------------------------
 static SolverConfig makeSolver(const nlohmann::json& j) {
     SolverConfig s;
@@ -98,23 +98,21 @@ static double computeCost(const ProblemData& data,
 // ---------------------------------------------------------------------------
 struct BenchRecord {
     std::string name;
-    // ADMM-LDLT
-    double admm_setup_us, admm_solve_us;
+    // ADMM (with polishing enabled)
     int    admm_iters;
     bool   admm_converged;
-    double admm_pri_res, admm_dua_res;
-    // ADMM-Riccati
-    double riccati_setup_us, riccati_solve_us;
-    int    riccati_iters;
-    bool   riccati_converged;
-    double riccati_pri_res, riccati_dua_res;
+    bool   admm_polished;
+    double admm_solve_us, admm_polish_us;
+    // Pre-polish ADMM metrics
+    double pre_cost, pre_violation, pre_pri_res, pre_dua_res;
+    // Post-polish (final) ADMM metrics
+    double post_cost, post_violation;
     // OSQP
     double osqp_setup_us, osqp_solve_us;
     int    osqp_iters;
     bool   osqp_converged;
     double osqp_pri_res, osqp_dua_res;
-    // Cost comparison
-    double cost_admm, cost_riccati, cost_osqp;
+    double cost_osqp;
 };
 
 // ---------------------------------------------------------------------------
@@ -145,29 +143,21 @@ static void run_benchmark(const nlohmann::json& scenario,
         pd.custom_upper_bounds = hi;
     }
 
-    // --- ADMM-LDLT ---
+    // --- ADMM (with polishing) ---
     pd.use_riccati = false;
     ADMMSolver admm(pd);
     auto admm_res = admm.solve();
-    rec.admm_setup_us  = admm_res.time_kkt_us;
-    rec.admm_solve_us  = admm_res.time_solve_us;
     rec.admm_iters     = admm_res.iterations;
     rec.admm_converged = admm_res.converged;
-    rec.admm_pri_res   = admm_res.primal_residual;
-    rec.admm_dua_res   = admm_res.dual_residual;
-    rec.cost_admm      = computeCost(pd, admm_res.x, admm_res.u);
-
-    // --- ADMM-Riccati ---
-    pd.use_riccati = true;
-    ADMMSolver riccati(pd);
-    auto riccati_res = riccati.solve();
-    rec.riccati_setup_us  = riccati_res.time_kkt_us;
-    rec.riccati_solve_us  = riccati_res.time_solve_us;
-    rec.riccati_iters     = riccati_res.iterations;
-    rec.riccati_converged = riccati_res.converged;
-    rec.riccati_pri_res   = riccati_res.primal_residual;
-    rec.riccati_dua_res   = riccati_res.dual_residual;
-    rec.cost_riccati      = computeCost(pd, riccati_res.x, riccati_res.u);
+    rec.admm_polished  = admm_res.polished;
+    rec.admm_solve_us  = admm_res.time_solve_us;
+    rec.admm_polish_us = admm_res.time_polish_us;
+    rec.pre_cost       = admm_res.pre_polish_objective_cost;
+    rec.pre_violation  = admm_res.pre_polish_max_bound_violation;
+    rec.pre_pri_res    = admm_res.pre_polish_primal_residual;
+    rec.pre_dua_res    = admm_res.pre_polish_dual_residual;
+    rec.post_cost      = admm_res.objective_cost;
+    rec.post_violation = admm_res.max_bound_violation;
 
     // --- OSQP ---
     pd.use_riccati = false;
@@ -183,11 +173,10 @@ static void run_benchmark(const nlohmann::json& scenario,
 
     records.push_back(rec);
 
-    std::cout << "  LDLT(" << (rec.admm_converged ? "Y" : "N")
-              << "/" << rec.admm_iters << " it)"
-              << " Riccati(" << (rec.riccati_converged ? "Y" : "N")
-              << "/" << rec.riccati_iters << " it)"
-              << " OSQP(" << (rec.osqp_converged ? "Y" : "N")
+    std::cout << "  ADMM(" << (rec.admm_converged ? "Y" : "N")
+              << "/" << rec.admm_iters << " it"
+              << (rec.admm_polished ? " polished" : "") << ")"
+              << "  OSQP(" << (rec.osqp_converged ? "Y" : "N")
               << "/" << rec.osqp_iters << " it)\n";
 }
 
@@ -195,123 +184,89 @@ static void run_benchmark(const nlohmann::json& scenario,
 // Print per-scenario comparison + summary
 // ---------------------------------------------------------------------------
 static void print_results(const std::vector<BenchRecord>& records) {
-    double admm_total_ms = 0, riccati_total_ms = 0, osqp_total_ms = 0;
-
-    // --- Summary table ---
-    const int W = 116;
-    std::cout << "\n" << std::string(W, '=') << "\n";
-    std::cout << "              ADMM-LDLT vs ADMM-Riccati vs OSQP Summary\n";
-    std::cout << std::string(W, '=') << "\n";
-
-    // Header
-    std::cout << std::left << std::setw(22) << "Scenario"
-              << " | "
-              << std::right
-              << std::setw(5) << "Iter" << " "
-              << std::setw(10) << "Solve" << " "
-              << std::setw(8) << "Total"
-              << " | "
-              << std::setw(5) << "Iter" << " "
-              << std::setw(10) << "Solve" << " "
-              << std::setw(8) << "Total"
-              << " | "
-              << std::setw(5) << "Iter" << " "
-              << std::setw(10) << "Solve" << " "
-              << std::setw(8) << "Total"
-              << "\n";
-    std::cout << std::string(W, '-') << "\n";
-
-    for (const auto& r : records) {
-        double admm_ms = (r.admm_setup_us + r.admm_solve_us) / 1000.0;
-        double riccati_ms = (r.riccati_setup_us + r.riccati_solve_us) / 1000.0;
-        double osqp_ms = (r.osqp_setup_us + r.osqp_solve_us) / 1000.0;
-        admm_total_ms += admm_ms;
-        riccati_total_ms += riccati_ms;
-        osqp_total_ms += osqp_ms;
-
-        std::cout << std::left << std::setw(22) << r.name << " | "
-                  << std::right
-                  << std::setw(5) << r.admm_iters << " "
-                  << std::setw(10) << std::fixed << std::setprecision(1) << r.admm_solve_us << " "
-                  << std::setw(7) << std::setprecision(3) << admm_ms << " "
-                  << " | "
-                  << std::setw(5) << r.riccati_iters << " "
-                  << std::setw(10) << r.riccati_solve_us << " "
-                  << std::setw(7) << std::setprecision(3) << riccati_ms << " "
-                  << " | "
-                  << std::setw(5) << r.osqp_iters << " "
-                  << std::setw(10) << r.osqp_solve_us << " "
-                  << std::setw(7) << std::setprecision(3) << osqp_ms
-                  << "\n";
-    }
-
-    std::cout << std::string(W, '-') << "\n";
-    std::cout << std::left << std::setw(22) << "TOTAL" << " | "
-              << std::right
-              << std::setw(5) << "" << " "
-              << std::setw(10) << "" << " "
-              << std::setw(7) << std::fixed << std::setprecision(3) << admm_total_ms << " "
-              << " | "
-              << std::setw(5) << "" << " "
-              << std::setw(10) << "" << " "
-              << std::setw(7) << riccati_total_ms << " "
-              << " | "
-              << std::setw(5) << "" << " "
-              << std::setw(10) << "" << " "
-              << std::setw(7) << osqp_total_ms
-              << "\n";
-
-    std::cout << std::string(W, '=') << "\n";
-    std::cout << "  LDLT total: " << admm_total_ms << " ms"
-              << "    Riccati total: " << riccati_total_ms << " ms"
-              << "    OSQP total: " << osqp_total_ms << " ms\n";
-
-    double riccati_speedup = (admm_total_ms > 0) ? admm_total_ms / riccati_total_ms : 0.0;
-    std::cout << "  Riccati vs LDLT speedup: " << std::setprecision(2) << riccati_speedup << "x\n";
-    std::cout << std::string(W, '=') << "\n";
-
     // --- Per-scenario detail ---
-    std::cout << "\n" << std::string(78, '=') << "\n";
+    const int W = 80;
+    std::cout << "\n" << std::string(W, '=') << "\n";
     std::cout << "                  Per-Scenario Detail\n";
-    std::cout << std::string(78, '=') << "\n";
+    std::cout << std::string(W, '=') << "\n";
 
     for (const auto& r : records) {
-        double admm_ms = (r.admm_setup_us + r.admm_solve_us) / 1000.0;
-        double riccati_ms = (r.riccati_setup_us + r.riccati_solve_us) / 1000.0;
-        double osqp_ms = (r.osqp_setup_us + r.osqp_solve_us) / 1000.0;
+        double admm_total_ms = r.admm_solve_us / 1000.0;
+        double osqp_total_ms = (r.osqp_setup_us + r.osqp_solve_us) / 1000.0;
 
         std::cout << "\n--- " << r.name << " ---\n";
         std::cout << std::fixed << std::setprecision(3);
-        std::cout << "  Metric         |   LDLT      | Riccati    |    OSQP\n";
-        std::cout << "  ---------------+------------+------------+------------\n";
-        std::cout << "  Converged      |" << std::setw(10) << (r.admm_converged ? "Yes" : "No") << "  |"
-                  << std::setw(10) << (r.riccati_converged ? "Yes" : "No") << "  |"
+        std::cout << "  Metric            |  ADMM(pre)   |  ADMM(post)  |    OSQP\n";
+        std::cout << "  ------------------+--------------+--------------+------------\n";
+        std::cout << "  Converged         |" << std::setw(12) << (r.admm_converged ? "Yes" : "No") << "  |"
+                  << std::setw(12) << (r.admm_converged ? (r.admm_polished ? "Polished" : "Yes") : "N/A") << "  |"
                   << std::setw(10) << (r.osqp_converged ? "Yes" : "No") << "\n";
-        std::cout << "  Iterations     |" << std::setw(10) << r.admm_iters << "  |"
-                  << std::setw(10) << r.riccati_iters << "  |"
+        std::cout << "  Iterations        |" << std::setw(12) << r.admm_iters << "  |"
+                  << std::setw(12) << "" << "  |"
                   << std::setw(10) << r.osqp_iters << "\n";
-        std::cout << "  Solve (us)     |" << std::setprecision(1) << std::setw(10) << r.admm_solve_us << "  |"
-                  << std::setw(10) << r.riccati_solve_us << "  |"
-                  << std::setw(10) << r.osqp_solve_us << "\n";
-        std::cout << "  Total (ms)     |" << std::setprecision(3) << std::setw(10) << admm_ms << "  |"
-                  << std::setw(10) << riccati_ms << "  |"
-                  << std::setw(10) << osqp_ms << "\n";
-        std::cout << "  Primal res     |" << std::scientific << std::setprecision(2)
-                  << std::setw(10) << r.admm_pri_res << "  |"
-                  << std::setw(10) << r.riccati_pri_res << "  |"
+        std::cout << "  Primal res        |" << std::scientific << std::setprecision(2)
+                  << std::setw(12) << r.pre_pri_res << "  |"
+                  << std::setw(12) << "" << "  |"
                   << std::setw(10) << r.osqp_pri_res << "\n";
-        std::cout << "  Dual res       |" << std::setw(10) << r.admm_dua_res << "  |"
-                  << std::setw(10) << r.riccati_dua_res << "  |"
+        std::cout << "  Dual res          |" << std::setw(12) << r.pre_dua_res << "  |"
+                  << std::setw(12) << "" << "  |"
                   << std::setw(10) << r.osqp_dua_res << "\n";
-        std::cout << std::fixed << std::setprecision(4);
-        std::cout << "  Cost           |" << std::setw(10) << r.cost_admm << "  |"
-                  << std::setw(10) << r.cost_riccati << "  |"
-                  << std::setw(10) << r.cost_osqp << "\n";
-
-        double riccati_vs_ldlt = (admm_ms > 0) ? admm_ms / riccati_ms : 0.0;
-        std::cout << "  Riccati/LDLT speedup: " << std::setprecision(2) << riccati_vs_ldlt << "x\n";
+        std::cout << std::fixed << std::setprecision(6);
+        std::cout << "  Objective cost    |" << std::setw(12) << r.pre_cost << "  |"
+                  << std::setw(12) << r.post_cost << "  |"
+                  << std::setw(10) << std::setprecision(6) << r.cost_osqp << "\n";
+        std::cout << "  Bound violation   |" << std::scientific << std::setprecision(2)
+                  << std::setw(12) << r.pre_violation << "  |"
+                  << std::setw(12) << r.post_violation << "  |"
+                  << std::setw(10) << "" << "\n";
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "  Solve time (us)   |" << std::setprecision(1) << std::setw(12) << r.admm_solve_us << "  |"
+                  << std::setw(12) << "" << "  |"
+                  << std::setw(10) << r.osqp_solve_us << "\n";
+        if (r.admm_polished) {
+            std::cout << "  Polish time (us)  |" << std::setw(12) << "" << "  |"
+                      << std::setw(12) << std::setprecision(1) << r.admm_polish_us << "  |"
+                      << std::setw(10) << "" << "\n";
+        }
     }
-    std::cout << "\n" << std::string(78, '=') << "\n";
+    std::cout << "\n" << std::string(W, '=') << "\n";
+
+    // --- Summary table ---
+    const int SW = 90;
+    std::cout << "\n" << std::string(SW, '=') << "\n";
+    std::cout << "              ADMM vs OSQP Summary\n";
+    std::cout << std::string(SW, '=') << "\n";
+
+    std::cout << std::left << std::setw(24) << "Scenario"
+              << " | "
+              << std::right
+              << std::setw(5) << "Iter" << " "
+              << std::setw(4) << "Pol" << " "
+              << std::setw(10) << "Cost" << " "
+              << std::setw(10) << "Viol" << " "
+              << " | "
+              << std::setw(5) << "Iter" << " "
+              << std::setw(10) << "Cost"
+              << "\n";
+    std::cout << std::string(SW, '-') << "\n";
+
+    for (const auto& r : records) {
+        std::cout << std::left << std::setw(24) << r.name << " | "
+                  << std::right
+                  << std::setw(5) << r.admm_iters << " "
+                  << std::setw(4) << (r.admm_polished ? "*" : " ")
+                  << std::fixed << std::setprecision(2)
+                  << std::setw(10) << r.post_cost << " "
+                  << std::scientific << std::setprecision(2)
+                  << std::setw(10) << r.post_violation << " "
+                  << " | "
+                  << std::setw(5) << r.osqp_iters << " "
+                  << std::fixed << std::setprecision(2)
+                  << std::setw(10) << r.cost_osqp
+                  << "\n";
+    }
+
+    std::cout << std::string(SW, '=') << "\n";
 }
 
 // ---------------------------------------------------------------------------

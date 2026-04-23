@@ -42,6 +42,11 @@ private:
                         const Eigen::VectorXd& lambda,
                         ADMMResult& result) const;
 
+    // Compute objective cost from stacked y vector
+    double computeObjectiveCost(const Eigen::VectorXd& y) const;
+    // Compute max bound violation from stacked y vector
+    double computeMaxBoundViolation(const Eigen::VectorXd& y) const;
+
     ProblemData data_;
     int nx_, nu_, ny_, n_eq_;
     bool use_riccati_ = false;

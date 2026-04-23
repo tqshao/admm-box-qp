@@ -92,6 +92,16 @@ struct ADMMResult {
     bool   polished = false;        // true if polishing was attempted and accepted
     double time_polish_us = 0.0;    // polishing time (microseconds)
 
+    // Final solution quality (after polishing if applied)
+    double objective_cost    = 0.0;  // 0.5 * sum(x_k^T Q x_k + u_k^T R u_k) + 0.5 * x_N^T P x_N
+    double max_bound_violation = 0.0; // max(0, max(|y_i - clip(y_i, l_i, u_i)|))
+
+    // Pre-polish metrics (ADMM solution before polishing)
+    double pre_polish_objective_cost    = 0.0;
+    double pre_polish_max_bound_violation = 0.0;
+    double pre_polish_primal_residual   = 0.0;
+    double pre_polish_dual_residual     = 0.0;
+
     // Timing (microseconds)
     double time_kkt_us = 0.0;  // KKT build + factorization
     double time_solve_us = 0.0;  // ADMM iterations total

@@ -430,6 +430,14 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
         result.time_solve_us =
             std::chrono::duration<double, std::micro>(solve_end - solve_start).count();
 
+        // Compute pre-polish metrics
+        if (result.converged) {
+            result.pre_polish_primal_residual = result.primal_residual;
+            result.pre_polish_dual_residual   = result.dual_residual;
+            result.pre_polish_objective_cost  = computeObjectiveCost(y);
+            result.pre_polish_max_bound_violation = computeMaxBoundViolation(y);
+        }
+
         // Polishing (original space)
         if (result.converged && data_.polish) {
             polishSolution(y, z, lambda, result);
@@ -447,6 +455,13 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
         }
         result.x[data_.N] = y.segment(idx, nx_);
         result.final_rho = rho;
+
+        // Compute final metrics
+        if (result.converged) {
+            result.objective_cost      = computeObjectiveCost(y);
+            result.max_bound_violation = computeMaxBoundViolation(y);
+        }
+
         return result;
     }
 
@@ -545,6 +560,14 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
     // Unscale: y = D * y_s
     Eigen::VectorXd y = D_.asDiagonal() * y_s;
 
+    // Compute pre-polish metrics
+    if (result.converged) {
+        result.pre_polish_primal_residual = result.primal_residual;
+        result.pre_polish_dual_residual   = result.dual_residual;
+        result.pre_polish_objective_cost  = computeObjectiveCost(y);
+        result.pre_polish_max_bound_violation = computeMaxBoundViolation(y);
+    }
+
     // Polishing (original space)
     if (result.converged && data_.polish) {
         Eigen::VectorXd z_orig     = D_.asDiagonal() * z_s;
@@ -565,7 +588,44 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
     result.x[data_.N] = y.segment(idx, nx_);
 
     result.final_rho = rho;
+
+    // Compute final metrics
+    if (result.converged) {
+        result.objective_cost      = computeObjectiveCost(y);
+        result.max_bound_violation = computeMaxBoundViolation(y);
+    }
+
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Compute objective cost: 0.5 * sum(x_k^T Q x_k + u_k^T R u_k) + 0.5 * x_N^T P x_N
+// ---------------------------------------------------------------------------
+double ADMMSolver::computeObjectiveCost(const Eigen::VectorXd& y) const {
+    const int stride = nx_ + nu_;
+    double cost = 0.0;
+    for (int k = 0; k < data_.N; ++k) {
+        int base = k * stride;
+        cost += 0.5 * y.segment(base, nx_).dot(data_.Q * y.segment(base, nx_));
+        cost += 0.5 * y.segment(base + nx_, nu_).dot(data_.R * y.segment(base + nx_, nu_));
+    }
+    int term_base = data_.N * stride;
+    cost += 0.5 * y.segment(term_base, nx_).dot(data_.P * y.segment(term_base, nx_));
+    return cost;
+}
+
+// ---------------------------------------------------------------------------
+// Compute max bound violation: max(0, max(|y_i - clip(y_i, l_i, u_i)|))
+// ---------------------------------------------------------------------------
+double ADMMSolver::computeMaxBoundViolation(const Eigen::VectorXd& y) const {
+    double violation = 0.0;
+    for (int i = 0; i < ny_; ++i) {
+        double lo = lower_bounds_[i];
+        double hi = upper_bounds_[i];
+        if (y[i] < lo) violation = std::max(violation, lo - y[i]);
+        else if (y[i] > hi) violation = std::max(violation, y[i] - hi);
+    }
+    return violation;
 }
 
 // ---------------------------------------------------------------------------
