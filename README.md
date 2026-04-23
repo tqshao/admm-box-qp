@@ -186,12 +186,23 @@ subject to:
 
 ## 2. ADMM Variable Splitting
 
-Decouple the "coupled physics" from the "local boundaries":
+The original constrained problem is split by introducing an auxiliary variable $z$ of the same dimension as $y$:
 
-- **$y$ (Physics Expert):** Full trajectory vector satisfying dynamics
-- **$z$ (Boundary Expert):** Same dimension, satisfying box constraints
+$$\min_{y, z} \underbrace{\frac{1}{2} y^T H y + \mathbb{I}_{\{Cy = d\}}(y)}_{f(y)} + \underbrace{\mathbb{I}_{\{l \le z \le u\}}(z)}_{g(z)} \quad \text{s.t. } y = z$$
 
-**Consensus form:** $\min_{y,z} f(y) + g(z) \quad \text{s.t. } y - z = 0$
+where:
+
+- **$y$ (Physics Expert):** Stacked trajectory vector $y = [x_0; u_0; x_1; u_1; \dots; x_{N-1}; u_{N-1}; x_N]$ responsible for satisfying dynamics ($Cy = d$) and minimizing the LQR cost ($\frac{1}{2} y^T H y$)
+- **$z$ (Boundary Expert):** Auxiliary variable responsible for satisfying box constraints ($l \le z \le u$)
+- **$H$**: Block-diagonal Hessian $\mathrm{diag}(Q, R, \dots, Q, R, P)$
+- **$C, d$**: Dynamics constraint matrix and RHS ($d = [0; \dots; 0; \bar{x}_0]$)
+- **$\mathbb{I}_{\mathcal{S}}$**: Indicator function — 0 if in set $\mathcal{S}$, $+\infty$ otherwise
+
+The **augmented Lagrangian** for the consensus problem $y = z$ is:
+
+$$\mathcal{L}_\rho(y, z, \lambda) = f(y) + g(z) + \lambda^T(y - z) + \frac{\rho}{2}\|y - z\|^2$$
+
+ADMM alternates between minimizing over $y$ (with dynamics), minimizing over $z$ (with bounds), and updating the dual variable $\lambda$.
 
 ## 3. ADMM Iterations
 
