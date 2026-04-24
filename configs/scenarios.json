@@ -14,7 +14,7 @@
       "eps_rel": 0.001,
       "max_iter": 3000,
       "adaptive_rho": true,
-      "auto_rho": true,
+      "auto_rho": false, 
       "adapt_tolerance": 3.0
     }
   },
