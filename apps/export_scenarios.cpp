@@ -45,6 +45,7 @@ static SolverConfig makeSolver(const nlohmann::json& j) {
     if (j.contains("adapt_tolerance")) s.adapt_tolerance = j["adapt_tolerance"];
     if (j.contains("rho_min"))         s.rho_min         = j["rho_min"];
     if (j.contains("rho_max"))         s.rho_max         = j["rho_max"];
+    if (j.contains("auto_rho"))        s.auto_rho        = j["auto_rho"];
     if (j.contains("use_riccati"))     s.use_riccati     = j["use_riccati"];
     if (j.contains("polish"))          s.polish          = j["polish"];
     if (j.contains("polish_delta"))    s.polish_delta    = j["polish_delta"];

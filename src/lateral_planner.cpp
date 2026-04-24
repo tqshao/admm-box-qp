@@ -120,6 +120,7 @@ LateralPlanner::LateralPlanner(const PlannerConfig& planner_cfg,
     problem_data_.adapt_tolerance = solver_cfg_.adapt_tolerance;
     problem_data_.rho_min       = solver_cfg_.rho_min;
     problem_data_.rho_max       = solver_cfg_.rho_max;
+    problem_data_.auto_rho      = solver_cfg_.auto_rho;
     problem_data_.use_riccati   = solver_cfg_.use_riccati;
     problem_data_.polish        = solver_cfg_.polish;
     problem_data_.polish_delta  = solver_cfg_.polish_delta;

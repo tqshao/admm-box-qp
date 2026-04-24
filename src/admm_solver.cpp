@@ -22,9 +22,11 @@ ADMMSolver::ADMMSolver(const ProblemData& data) : data_(data) {
     buildBounds();
     use_riccati_ = data_.use_riccati;
 
+    // Determine initial rho
     if (use_riccati_) {
         riccati_ = std::make_unique<RiccatiSolver>(nx_, nu_, data_.N);
         kkt_time_us_ = 0.0;
+        initial_rho_ = data_.auto_rho ? computeDataDrivenRho() : data_.rho;
     } else {
         auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -34,8 +36,11 @@ ADMMSolver::ADMMSolver(const ProblemData& data) : data_(data) {
         // Step 2: Compute Ruiz scaling from base KKT
         computeRuizScaling(10);
 
-        // Step 3: Build scaled KKT with rho*I as plain diagonal
-        buildScaledKKT(data_.rho);
+        // Step 3: Choose initial rho (data-driven or user-provided)
+        initial_rho_ = data_.auto_rho ? computeDataDrivenRho() : data_.rho;
+
+        // Step 4: Build scaled KKT with rho*I as plain diagonal
+        buildScaledKKT(initial_rho_);
 
         // Cache positions of top-left diagonal entries in valuePtr()
         {
@@ -51,7 +56,7 @@ ADMMSolver::ADMMSolver(const ProblemData& data) : data_(data) {
                 }
             }
         }
-        current_rho_ = data_.rho;
+        current_rho_ = initial_rho_;
 
         solver_.analyzePattern(kkt_matrix_);
         solver_.factorize(kkt_matrix_);
@@ -375,7 +380,7 @@ ADMMResult ADMMSolver::solve(const WarmStart& warm) const {
         }
         z_prev = z;
 
-        double rho = data_.rho;
+        double rho = initial_rho_;
 
         for (int iter = 0; iter < data_.max_iter; ++iter) {
             y = riccatiYUpdate(rho, z, lambda);
@@ -626,6 +631,48 @@ double ADMMSolver::computeMaxBoundViolation(const Eigen::VectorXd& y) const {
         else if (y[i] > hi) violation = std::max(violation, y[i] - hi);
     }
     return violation;
+}
+
+// ---------------------------------------------------------------------------
+// Data-driven rho initialization
+//
+// LDLT path: average diagonal of D*H*D in Ruiz-scaled space.
+//   After equilibration, D*H*D has ~unit row norms. Setting rho to the
+//   average diagonal balances the cost scale against the ADMM penalty.
+//
+// Riccati path: sqrt(trace(H) / ny) — RMS of Hessian diagonal.
+//   Balances the average curvature per variable against the penalty.
+// ---------------------------------------------------------------------------
+double ADMMSolver::computeDataDrivenRho() const {
+    if (use_riccati_) {
+        // Riccati operates in original space — use trace formula
+        double trace_H = 0.0;
+        for (int k = 0; k < data_.N; ++k) {
+            trace_H += data_.Q.trace();
+            trace_H += data_.R.trace();
+        }
+        trace_H += data_.P.trace();
+        double rho = std::sqrt(trace_H / static_cast<double>(ny_));
+        return std::max(data_.rho_min, std::min(data_.rho_max, rho));
+    }
+
+    // LDLT path: use Ruiz-scaled cost scale
+    // avg = (1/ny) * Σ D[i]² · H_diag[i]
+    double avg_scale = 0.0;
+    int idx = 0;
+    for (int k = 0; k < data_.N; ++k) {
+        for (int i = 0; i < nx_; ++i)
+            avg_scale += D_[idx + i] * D_[idx + i] * data_.Q(i, i);
+        idx += nx_;
+        for (int i = 0; i < nu_; ++i)
+            avg_scale += D_[idx + i] * D_[idx + i] * data_.R(i, i);
+        idx += nu_;
+    }
+    for (int i = 0; i < nx_; ++i)
+        avg_scale += D_[idx + i] * D_[idx + i] * data_.P(i, i);
+
+    avg_scale /= static_cast<double>(ny_);
+    return std::max(data_.rho_min, std::min(data_.rho_max, avg_scale));
 }
 
 // ---------------------------------------------------------------------------

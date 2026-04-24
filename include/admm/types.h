@@ -52,6 +52,9 @@ struct ProblemData {
     double rho_min            = 1e-6;    // lower bound on rho
     double rho_max            = 1e+6;    // upper bound on rho
 
+    // Data-driven rho initialization (OSQP-style)
+    bool   auto_rho           = false;   // compute initial rho from problem data
+
     // Polishing (OSQP-style)
     bool   polish             = true;    // enable solution polishing after ADMM convergence
     double polish_delta       = 1e-6;    // regularization for polishing KKT

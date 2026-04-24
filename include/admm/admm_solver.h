@@ -46,6 +46,8 @@ private:
     double computeObjectiveCost(const Eigen::VectorXd& y) const;
     // Compute max bound violation from stacked y vector
     double computeMaxBoundViolation(const Eigen::VectorXd& y) const;
+    // Data-driven rho: average diagonal of D*H*D in scaled space (LDLT) or sqrt(trace(H)/ny) (Riccati)
+    double computeDataDrivenRho() const;
 
     ProblemData data_;
     int nx_, nu_, ny_, n_eq_;
@@ -71,6 +73,7 @@ private:
 
     Eigen::VectorXd lower_bounds_;
     Eigen::VectorXd upper_bounds_;
+    double initial_rho_ = 0.0;           // initial rho (user-provided or data-driven)
     mutable double kkt_time_us_ = 0.0;
 };
 

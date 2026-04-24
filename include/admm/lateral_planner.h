@@ -23,6 +23,9 @@ struct SolverConfig {
     double rho_min            = 1e-6;
     double rho_max            = 1e+6;
 
+    // Data-driven rho initialization (OSQP-style)
+    bool   auto_rho           = false;
+
     // Polishing (OSQP-style)
     bool   polish             = true;
     double polish_delta       = 1e-6;
