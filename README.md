@@ -1,6 +1,14 @@
 # ADMM Constrained Trajectory Optimization
 
-C++ implementation of an ADMM-based solver for box-constrained linear-quadratic trajectory optimization, applied to autonomous driving lateral motion planning.
+C++ implementation of an ADMM-based solver for box-constrained linear-quadratic trajectory optimization, applied to autonomous driving lateral motion planning, with performance exceeding OSQP.
+
+## Problem Definition
+
+$$\min_{\mathbf{x, u}} \quad \frac{1}{2} \sum_{k=0}^{N-1} (x_k^T Q x_k + u_k^T R u_k) + \frac{1}{2} x_N^T P x_N$$
+
+subject to:
+1. **Linear Dynamics:** $x_{k+1} = A x_k + B u_k, \quad k=0, \dots, N-1$
+2. **Box Constraints:** $l \le y \le u$ where $y = [x_0, u_0, \dots, x_N]^T$
 
 ## Features
 
@@ -19,6 +27,13 @@ C++ implementation of an ADMM-based solver for box-constrained linear-quadratic 
 - **JSON configuration** for solver, planner, and scenario parameters
 - **Python visualization** with 4-panel trajectory plots and timing analysis
 - **OSQP benchmark**: optional side-by-side comparison against OSQP on identical problems
+
+## Example Scenarios
+
+| Lane Keeping (offset → center) | Obstacle Avoidance (swerve left) | Narrow Gap (0.5 m corridor) |
+|:---:|:---:|:---:|
+| ![Lane keeping offset](figures/png/02_lane_keeping_offset.png) | ![Swerve left](figures/png/06_swerve_left.png) | ![Narrow gap](figures/png/09_narrow_gap.png) |
+| y₀=0.8 m, no obstacles | Single obstacle, top-view path | Two obstacles, 0.5 m gap |
 
 ## Project Structure
 

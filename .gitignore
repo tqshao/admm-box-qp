@@ -13,7 +13,7 @@ build/
 Thumbs.db
 
 # Output
-figures/
+figures/csv/
 
 # Claude Code
 .claude/
